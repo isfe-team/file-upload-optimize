@@ -3,91 +3,109 @@
  * wip
  */
  window.onload = function () {
-  // 封装post请求
-  function uploadFile (url, data, success, error) {
-    var xhr = new XMLHttpRequest();
-    xhr.open('post', url);
-    xhr.send(data);
-    xhr.onreadystatechange = function () {
-      if (xhr.readyState === 4 && xhr.status === 200) {
-        console.log('上传成功');
-        success(xhr.responseText);
-      } else {
-        console.log('上传失败');
-        error()
-      }
-    }
+  // 未处理后续动作，待完善
+  function uploadFile (data) {
+    return fetch('http://localhost:10240/upload', {
+      method: 'POST',
+      body: data
+    })
   }
+
+  function notifyUploadEnd (fileName) {
+    return fetch('http://localhost:10240/concat-caches?fileName=' + fileName, {
+      method: 'GET'
+    })
+  }
+
   // 处理函数
   const task = {
     // 切割文件
     cutfile (file, chunkSize) {
-      let count = parseInt(file.size / chunkSize, 10);
-      let chunks = [ ];
-      for (let i = 0; i <= count; i++) {
-        const fileBlob = i === count ? file.slice(chunkSize * count, file.size) : file.slice(chunkSize * i, chunkSize * (i + 1));
-        task.getMd5(fileBlob, function (err, md5sum) {
-          chunks.push({
-            blob: fileBlob,
-            index: i,
-            blobSize: fileBlob.size,
-            fileName: file.fileName,
-            totalCount: count + 1,
-            md5: md5sum
-          })
-        })
+      // 向上取整
+      const fileSize = file.size
+      if (fileSize === 0) {
+        return Promise.reject(new Error('No file'))
       }
-      return chunks;
-    },
-    getMd5 (file, callback) {
-      const reader = new FileReader();
-      reader.onerror = function (e) {
-        callback(e)
-      }
-      reader.onload = function (e) {
-        const md5sum = SparkMD5.hashBinary(e.target.result)
-        callback(null, md5sum)
-      };
-      reader.readAsBinaryString(file)
-    },
-    // 单个文件上传请求
-    upload (chunk, type) {
-      const formData = new FormData();
-      // Object.keys(chunk)
-      for (let key in chunk) {
-        if (chunk.hasOwnProperty(key)) {
-          formData.append(key, chunk[key]);
+
+      const tasks$ = [ ]
+      let startPosition = 0
+      let count = 0
+
+      while (true) {
+        let endPosition = startPosition + chunkSize
+
+        const isLastChunk = endPosition >= fileSize
+        if (isLastChunk) {
+          endPosition = fileSize
+        }
+
+        const blob = file.slice(startPosition, endPosition)
+
+        const task$ = task.getMd5sum(blob).then(
+          (function (chunkIndex) {
+            return function (md5sum) {
+              return { blob: blob, chunkIndex: chunkIndex, md5sum: md5sum, fileName: file.name }
+            }
+          })(count),
+          function () { console.log() }
+        )
+
+        tasks$.push(task$)
+
+        count += 1
+        startPosition += chunkSize
+
+        if (isLastChunk) {
+          break
         }
       }
-      uploadFile('http:\/\/localhost:8090', formData, function (res) {
-        console.log(res);
-        if (type === 'async' && chunk.index !== chunks.length) {
-          task.upload(chunks[chunk.index + 1], type)
+      return Promise.all(tasks$)
+    },
+    getMd5sum (file) {
+      return new Promise(function (resolve, reject) {
+        const reader = new FileReader()
+        reader.onerror = function (err) {
+          reject(err)
         }
-      }, function () {
-        task.upload(chunk, type);
+        reader.onload = function (e) {
+          const md5sum = SparkMD5.hashBinary(e.target.result)
+          resolve(md5sum)
+        }
+        reader.readAsBinaryString(file)
       })
     },
-    // type为async为按序上传，type为sync为同步上传
-    uploadFile(chunks, type) {
-      // 按序上传
-      if (type === 'async') {
-        task.upload(chunks[0], type);
-      } else {
-        // 同步一起上传
-        for (let i = 0; i < chunks.length; i++) {
-          task.upload(chunks[i], 'sync')
-        }
-      }
+    // 单个文件上传请求
+    uploadChunk (chunk, type) {
+      const fd = new FormData()
+      Object.keys(chunk).forEach((prop) => {
+        fd.append(prop, chunk[prop])
+      })
+      return uploadFile(fd)
+    },
+    uploadChunks(chunks, type) {
+      // 先只是并发传
+      return Promise.all(chunks.map(function (chunk) {
+        return task.uploadChunk(chunk)
+      })).then(function () {
+        notifyUploadEnd(chunks[0].fileName)
+      })
     }
   }
 
-  const fileInput = document.getElementById('file');
+  const fileInput = document.querySelector('#file')
+
   fileInput.addEventListener('change', function (evt) {
     const file = evt.target.files[0];
-    const chunks = task.cutfile(file, 1024 * 1024);
-    // 按序上传
-    task.uploadFile(chunks, 'async');
+    task.cutfile(file, 100 * 1024).then(function (chunks) {
+      const chunkLength = chunks.length
+      chunks.forEach(function (chunk) {
+        chunk.chunkLength = chunkLength
+      })
+
+      console.log(chunks)
+
+      return task.uploadChunks(chunks)
+    })
   })
  }
 

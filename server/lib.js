@@ -30,7 +30,6 @@ const cacheChunk = (chunkIndex, fileName, blob, callback) => {
   cacheStream.on('error', (err) => callback(err))
 
   blobStream.pipe(cacheStream)
-
 }
 
 // 合并 cacheFiles 然后输出 合并后的文件
@@ -106,7 +105,7 @@ const concatCaches = (cacheDirectory, outputName, callback) => {
 
 // 测试用
 const testConcatCaches = () => {
-  concatCaches('test', 'test.md', (err) => {
+  concatCaches('hy.jpg', 'hy.jpg', (err) => {
     if (err) {
       console.error('error:', err)
       return
@@ -116,7 +115,9 @@ const testConcatCaches = () => {
   })
 }
 
-modules.exports = {
+// testConcatCaches()
+
+module.exports = {
   cacheChunk,
   concatCaches
 }
