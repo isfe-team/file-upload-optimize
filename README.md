@@ -18,6 +18,8 @@ Optimize file upload, use slice and support to resume from break. WIP -，-
 
 ## notes
 
-对于文件分片了，如果用户刷新了浏览器应该也是不行的。除非将 Blob 能持久化到本地（比如 Base64 到 localStorage/sessionStorage）。
+- 对于文件分片了，如果用户刷新了浏览器应该也是不行的。除非将 Blob 能持久化到本地（比如 Base64 到 localStorage/sessionStorage）。
+
+- 如果中间过程中服务端也发生异常了，客户端如何处理其实也很麻烦。
 
 ## refs
