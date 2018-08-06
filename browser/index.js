@@ -21,44 +21,48 @@
   // 处理函数
   const task = {
     // 切割文件
-    cutfile (file, chunkSize) {
+    cutfile (file, chunkSize, callback) {
       let count = parseInt(file.size / chunkSize, 10);
       let chunks = [ ];
-      for (let i = 0; i <= count; i++) {
+      for (let i = 0; i < count + 1; i++) {
         const fileBlob = i === count ? file.slice(chunkSize * count, file.size) : file.slice(chunkSize * i, chunkSize * (i + 1));
-        task.getMd5(fileBlob, function (err, md5sum) {
-          chunks.push({
-            blob: fileBlob,
-            index: i,
-            blobSize: fileBlob.size,
-            fileName: file.fileName,
-            totalCount: count + 1,
-            md5: md5sum
-          })
+        chunks.push({
+          blob: fileBlob,
+          index: i,
+          blobSize: fileBlob.size,
+          fileName: file.name,
+          totalCount: count + 1
         })
       }
-      return chunks;
+      chunks = task.setMd5(chunks, function (err, chunks) {
+        callback(chunks)
+      });
     },
-    getMd5 (file, callback) {
+    setMd5 (chunks, callback) {
       const reader = new FileReader();
+      let count = 0;
       reader.onerror = function (e) {
         callback(e)
       }
       reader.onload = function (e) {
         const md5sum = SparkMD5.hashBinary(e.target.result)
-        callback(null, md5sum)
+        chunks[count].md5sum = md5sum;
+        count++;
+        if (count >= chunks.length) {
+          callback(null, chunks)
+        }
       };
-      reader.readAsBinaryString(file)
+      for (let i = 0; i < chunks.length; i++) {
+        reader.readAsBinaryString(chunks[i].blob)
+      }
     },
     // 单个文件上传请求
     upload (chunk, type) {
       const formData = new FormData();
       // Object.keys(chunk)
-      for (let key in chunk) {
-        if (chunk.hasOwnProperty(key)) {
-          formData.append(key, chunk[key]);
-        }
-      }
+      Object.keys(chunk).forEach(function (key) {
+        formData.append(key, chunk[key]);
+      })
       uploadFile('http:\/\/localhost:8090', formData, function (res) {
         console.log(res);
         if (type === 'async' && chunk.index !== chunks.length) {
@@ -85,9 +89,9 @@
   const fileInput = document.getElementById('file');
   fileInput.addEventListener('change', function (evt) {
     const file = evt.target.files[0];
-    const chunks = task.cutfile(file, 1024 * 1024);
-    // 按序上传
-    task.uploadFile(chunks, 'async');
+    task.cutfile(file, 1024 * 1024, function (chunks) {
+      task.uploadFile(chunks, 'async');
+    });
   })
  }
 
