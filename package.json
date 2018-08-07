@@ -5,6 +5,7 @@
   "main": "present.js",
   "dependencies": {
     "formidable": "^1.2.1",
+    "shelljs": "^0.8.2",
     "spark-md5": "^3.0.0"
   },
   "devDependencies": {},

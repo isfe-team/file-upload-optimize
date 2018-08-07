@@ -4,6 +4,7 @@
  *
  * @todo 上传快错误处理 增加 retry 以及 maxRetryCount
  * @todo 增加 pause 和 resume
+ * @todo 支持 Worker
  *
  * 支持 pause 和 resume 的话可能需要 Task 以及 TaskRunner
  */
@@ -35,7 +36,7 @@
       chunkSize: 100 * 1024,    // 100KB
       maxConcurrencyNumber: 4,  // Infinity,
       overrideFileName: '',
-      needMd5sum: true,
+      needMd5sum: false,        // true,
       uploadApi: null,
       notifyApi: null
     }
@@ -55,7 +56,7 @@
         return Promise.reject(new Error('No file'))
       }
 
-      var chunks = [ ]
+      var chunks$ = [ ]
 
       // 记录当前的起始位置，以及总共的块数
       var startPosition = 0
@@ -73,17 +74,17 @@
 
         var blob = task.file.slice(startPosition, endPosition)
 
-        var chunk = task.getMd5sum(blob).then(
+        var chunk$ = task.getMd5sum(blob).then(
           // 注意 closure
-          (function (chunkIndex) {
+          (function (blob, chunkIndex) {
             return function (md5sum) {
               return { blob: blob, chunkIndex: chunkIndex, md5sum: md5sum, fileName: task.file.name }
             }
-          })(count),
+          })(blob, count),
           function (err) { throw err }
         )
 
-        chunks.push(chunk)
+        chunks$.push(chunk$)
 
         count += 1
         startPosition += task.options.chunkSize
@@ -93,21 +94,23 @@
           break
         }
       }
-      return Promise.all(chunks)
+      return Promise.all(chunks$)
     },
     // 使用 SparkMD5 来获取 md5 值，但是包装成基于 Promise 的
     getMd5sum (file) {
-      return new Promise(function (resolve, reject) {
-        var reader = new FileReader()
-        reader.onerror = function (err) {
-          reject(err)
-        }
-        reader.onload = function (e) {
-          var md5sum = SparkMD5.hashBinary(e.target.result)
-          resolve(md5sum)
-        }
-        reader.readAsBinaryString(file)
-      })
+      return !this.options.needMd5sum
+        ? Promise.resolve('')
+        : new Promise(function (resolve, reject) {
+            var reader = new FileReader()
+            reader.onerror = function (err) {
+            reject(err)
+          }
+          reader.onload = function (e) {
+            var md5sum = SparkMD5.hashBinary(e.target.result)
+            resolve(md5sum)
+          }
+          reader.readAsBinaryString(file)
+        })
     },
     // 单个块上传
     uploadChunk (chunk, type) {
@@ -164,8 +167,9 @@
         return next(chunk)
       })
 
-      Promise.all(initialUploadQueue).then(function () {
-        task.options.notifyApi(chunks[0].fileName)
+      return Promise.all(initialUploadQueue).then(function () {
+        // 最后的通知先不计入
+        // return task.options.notifyApi(chunks[0].fileName)
       })
     }
   }
@@ -176,11 +180,22 @@
     fileInput.addEventListener('change', function (evt) {
       var file = evt.target.files[0]
 
-      var task = new Task(file, { uploadApi: uploadFile, notifyApi: notifyUploadEnd })
+      if (!file) {
+        return
+      }
+
+      var task = new Task(file, {
+        chunkSize: 20 * 1024 * 1024,
+        maxConcurrencyNumber: 6,
+        uploadApi: uploadFile,
+        notifyApi: notifyUploadEnd
+      })
 
       evt.target.value = null
 
+      console.time('slice')
       task.sliceFile().then(function (chunks) {
+        console.timeEnd('slice')
         var chunkLength = chunks.length
         chunks.forEach(function (chunk) {
           chunk.chunkLength = chunkLength
@@ -188,7 +203,33 @@
 
         console.log(chunks)
 
+        console.time('upload')
         return task.uploadChunks(chunks)
+      }).then(function () {
+        console.timeEnd('upload')
+
+        // console.time('one slice')
+        // var task = new Task(file, {
+        //   chunkSize: Infinity,
+        //   uploadApi: uploadFile,
+        //   notifyApi: notifyUploadEnd
+        // })
+
+        // return task.sliceFile().then(function (chunks) {
+        //   console.timeEnd('one slice')
+
+        //   var chunkLength = chunks.length
+        //   chunks.forEach(function (chunk) {
+        //     chunk.chunkLength = chunkLength
+        //   })
+
+        //   console.log(chunks)
+
+        //   console.time('one upload')
+        //   return task.uploadChunks(chunks)
+        // }).then(function () {
+        //   console.timeEnd('one upload')
+        // })
       })
     })
   }

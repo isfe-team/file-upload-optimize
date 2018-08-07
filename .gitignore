@@ -1,4 +1,6 @@
+!.gitkeep
+
 cache/
-tmp/
 file/
+tmp/
 node_modules/

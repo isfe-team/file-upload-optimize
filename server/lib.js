@@ -33,9 +33,9 @@ const cacheChunk = (chunkIndex, fileName, blob, callback) => {
 }
 
 // 合并 cacheFiles 然后输出 合并后的文件
-const concatCaches = (cacheDirectory, outputName, callback) => {
+const concatCaches = (cachePath, outputPath, callback) => {
   // #0 查找所有文件
-  fs.readdir(path.join(__dirname, `../cache/${cacheDirectory}`), (err, cacheFiles) => {
+  fs.readdir(cachePath, (err, cacheFiles) => {
     if (err) {
       callback(err)
       return
@@ -55,7 +55,7 @@ const concatCaches = (cacheDirectory, outputName, callback) => {
     })
 
     // #2 输出流
-    const outputFile = fs.createWriteStream(path.join(__dirname, `../file/${outputName}`), { flags: 'w+' })
+    const outputFile = fs.createWriteStream(outputPath, { flags: 'w+' })
 
     outputFile.on('error', (err) => {
       console.error('output error:', err)
@@ -64,7 +64,7 @@ const concatCaches = (cacheDirectory, outputName, callback) => {
     // #3 按序遍历文件，pipe 到输出流
     // 输入单个缓存到输出
     const pipeCache = (cacheName, writable, callback) => {
-      const cacheStream = fs.createReadStream(path.join(__dirname, `../cache/${cacheDirectory}/${cacheName}`))
+      const cacheStream = fs.createReadStream(path.join(cachePath, cacheName))
 
       // 不能结束
       cacheStream.pipe(writable, { end: false })
