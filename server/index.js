@@ -8,12 +8,13 @@
  * state: wip
  */
 
-const fs = require('fs')
-const path = require('path')
-const http = require('http')
-const url = require('url')
+const fs          = require('fs')
+const path        = require('path')
+const http        = require('http')
+const url         = require('url')
+const shell       = require('shelljs')
 const querystring = require('querystring')
-const formidable = require('formidable')
+const formidable  = require('formidable')
 
 const { cacheChunk, concatCaches } = require('./lib')
 
@@ -25,30 +26,44 @@ const allowCORS = function (req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 }
 
+// 预先的一些文件夹创建
+const resolveDir = (dir) => path.join(__dirname, '..', dir)
+
+const TMP_DIR     = resolveDir('tmp')
+const CACHE_DIR   = resolveDir('cache')
+const OUTPUT_DIR  = resolveDir('file')
+
+;[ TMP_DIR, CACHE_DIR, OUTPUT_DIR ].forEach((dir) => shell.mkdir(dir))
 
 // #0 启动服务
 const server = http.createServer((req, res) => {
   allowCORS(req, res)
   const parsedUrl = url.parse(req.url)
+
+  const handleException = (err) => {
+    res.writeHead(500, { 'Content-Type': 'text/plain' })
+    res.end('error when save')
+  }
+
   // #1 接收请求
   if (parsedUrl.pathname === '/upload' && req.method.toUpperCase() === 'POST') {
-    const form = new formidable.IncomingForm()
+    // 1GB
+    const form = new formidable.IncomingForm({ maxFileSize: 1024 * 1024 * 1024 })
 
     // #2 本地持久化
-    form.uploadDir = path.join(__dirname, '../tmp')
-
-    const handleException = (err) => {
-      res.writeHead(500, { 'Content-Type': 'text/plain' })
-      res.end('error when save')
-    }
+    form.uploadDir = TMP_DIR
 
     form.on('error', handleException)
 
     form.parse(req, (err, fields, file) => {
+      if (err) {
+        handleException(err)
+        return
+      }
       // 持久化
       const { path: filePath } = file.blob
       const fileName = fields.fileName
-      const fileDir = path.join(form.uploadDir, `../cache/${fileName}`)
+      const fileDir = path.join(CACHE_DIR, `${fileName}`)
       try {
         const exist = fs.existsSync(fileDir)
         const renameFile = () => {
@@ -85,7 +100,7 @@ const server = http.createServer((req, res) => {
   }
   else if (parsedUrl.pathname === '/concat-caches' && req.method.toUpperCase() === 'GET') {
     const { fileName } = querystring.parse(parsedUrl.query)
-    concatCaches(fileName, fileName, (err) => {
+    concatCaches(path.join(CACHE_DIR, fileName), path.join(OUTPUT_DIR, fileName), (err) => {
       if (err) {
         handleException(err)
         return
