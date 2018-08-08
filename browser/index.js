@@ -1,12 +1,17 @@
 /*!
  * browser implementation
  * wip
+ *
+ * @todo 上传快错误处理 增加 retry 以及 maxRetryCount
+ * @todo 增加 pause 和 resume
+ *
+ * 支持 pause 和 resume 的话可能需要 Task 以及 TaskRunner
  */
 
 ;
 
 (function () {
-  // 未处理后续动作，待完善
+  // 上传文件 api
   function uploadFile (data) {
     return fetch('http://localhost:10240/upload', {
       method: 'POST',
@@ -14,157 +19,248 @@
     })
   }
 
+  // 通知服务端现在上传完毕了，可以合并了
   function notifyUploadEnd (fileName) {
     return fetch('http://localhost:10240/concat-caches?fileName=' + fileName, {
       method: 'GET'
     })
   }
 
-  class Task {
-    constructor (file, chunkSize, cutNum) {
-      this.file = file;
-      this.chunkSize = chunkSize;
-      this.cutNum = cutNum;
+  var /*chunkStateMap = */stateMap = { INITIAL: 0, UPLOADING: 1, SUCCESS: 2, ERROR: 3, PAUSE: 4 }
+  var taskStateMap = { ERROR: -1, INITIAL: 0, SLICING: 1, SLICED: 2, UPLOADING: 3, UPLOADED: 4 }
+
+  function Task (file, options) {
+    if (!(this instanceof Task)) {
+      throw new Error('Use new Task(config).')
     }
-    cutfile (file, chunkSize) {
-      // 向上取整
-      const fileSize = file.size
+
+    var defaultOptions = {
+      chunkSize: 100 * 1024,    // 100KB
+      maxConcurrencyNumber: 2,  // Infinity,
+      overrideFileName: '',
+      needMd5sum: true,
+      uploadApi: null,
+      notifyApi: null
+    }
+    this.options = Object.assign({ }, defaultOptions, options)
+    this.file = file
+
+    this.state = taskStateMap.INITIAL
+    this.chunks = [ ]
+
+    this.pausing = false
+
+    const chunkLength = Math.ceil(file.size / this.options.chunkSize)
+    this.fullChunkState = Object.keys(
+      (new Array(chunkLength)).join(',').split(',')
+    ).reduce((acc, x) => {
+        acc[x] = stateMap.INITIAL
+        return acc
+    }, { })
+  }
+
+  Task.prototype = {
+    constructor: Task,
+
+    sliceFile: function () {
+      var task = this
+
+      task.state = taskStateMap.SLICING
+
+      var fileSize = task.file.size
       if (fileSize === 0) {
+        task.state = taskStateMap.ERROR
         return Promise.reject(new Error('No file'))
       }
 
-      const tasks$ = [ ]
-      let startPosition = 0
-      let count = 0
+      var chunks = [ ]
 
+      // 记录当前的起始位置，以及总共的块数
+      var startPosition = 0
+      var count = 0
+
+      // 循环切分
       while (true) {
-        let endPosition = startPosition + chunkSize
+        var endPosition = startPosition + task.options.chunkSize
 
-        const isLastChunk = endPosition >= fileSize
+        // 调整最后的终止位置
+        var isLastChunk = endPosition >= fileSize
         if (isLastChunk) {
           endPosition = fileSize
         }
 
-        const blob = file.slice(startPosition, endPosition)
-
-        const task$ = this.getMd5sum(blob).then(
+        var blob = task.file.slice(startPosition, endPosition)
+        var chunk = task.getMd5sum(blob).then(
+          // 注意 closure
           (function (chunkIndex) {
             return function (md5sum) {
-              return { blob: blob, chunkIndex: chunkIndex, md5sum: md5sum, fileName: file.name }
+              return { blob: blob, chunkIndex: chunkIndex, md5sum: md5sum, fileName: task.file.name }
             }
           })(count),
-          function () { console.log() }
+          function (err) { throw err }
         )
 
-        tasks$.push(task$)
+        chunks.push(chunk)
 
         count += 1
-        startPosition += chunkSize
+        startPosition += task.options.chunkSize
 
+        // 出去的条件
         if (isLastChunk) {
           break
         }
       }
-      return Promise.all(tasks$)
-    }
+      return Promise.all(chunks)
+    },
+    // 使用 SparkMD5 来获取 md5 值，但是包装成基于 Promise 的
     getMd5sum (file) {
       return new Promise(function (resolve, reject) {
-        const reader = new FileReader()
+        var reader = new FileReader()
         reader.onerror = function (err) {
           reject(err)
         }
         reader.onload = function (e) {
-          const md5sum = SparkMD5.hashBinary(e.target.result)
+          var md5sum = SparkMD5.hashBinary(e.target.result)
           resolve(md5sum)
         }
         reader.readAsBinaryString(file)
       })
-    }
-    uploadChunk (chunk) {
-      const fd = new FormData()
+    },
+    // 单个块上传
+    uploadChunk (chunk, type) {
+      var fd = new FormData()
       Object.keys(chunk).forEach((prop) => {
         fd.append(prop, chunk[prop])
       })
-      return uploadFile(fd)
-    }
-    uploadChunks() {
-      const $this = this;
-      this.cutfile(this.file, this.chunkSize).then(function (chunks) {
-        const chunkLength = chunks.length
-        chunks.forEach(function (chunk) {
-          chunk.chunkLength = chunkLength
+      return this.options.uploadApi(fd)
+    },
+    // 批量上传多个块
+    uploadChunks(chunks) {
+      var task = this
+
+      // util - 获取当前未上传块
+      const randomGetNonUploadChunkIndex = function () {
+        let index = null
+
+        Object.keys(task.fullChunkState).some((prop) => {
+          if (task.fullChunkState[prop] === 0) {
+            index = Number(prop)
+
+            return true
+          }
         })
-        if (!$this.cutNum) {
-          $this.cutNum = chunkLength;
-        }
 
-        const fullChunkState = Object.keys((new Array(chunkLength)).join(',').split(',')).reduce((acc, x) => {
-          acc[x] = 0
-          return acc
-        }, { })
+        return index
+      }
 
-        // util - 获取当前未上传块
-        const randomGetNonUploadChunk = function () {
-          let ret = null
+      var next = function (chunk) {
+        task.fullChunkState[chunk.chunkIndex] = stateMap.UPLOADING
+        return task.uploadChunk(chunk).then(function (res) {
+          task.fullChunkState[chunk.chunkIndex] = stateMap.SUCCESS
 
-          Object.keys(fullChunkState).some((prop) => {
-            if (fullChunkState[prop] === 0) {
-              ret = Number(prop)
+          var nextIndex = randomGetNonUploadChunkIndex()
 
-              return true
-            }
-          })
+          console.log(chunk.chunkIndex, nextIndex)
 
-          return ret
-        }
-
-        const next = function (chunk) {
-          fullChunkState[chunk.chunkIndex] = 1
-          return $this.uploadChunk(chunk).then(res => {
-            fullChunkState[chunk.chunkIndex] = 2
-
-            const nextIndex = randomGetNonUploadChunk()
-
-            console.log(chunk.chunkIndex, nextIndex)
-
-            if (nextIndex !== null) {
-              return next(chunks[nextIndex])
-            }
-
-            // if ($this.cutNum + chunk.chunkIndex < chunk.chunkLength) {
-            //   return next(chunks[$this.cutNum + chunk.chunkIndex]);
-            // }
-          })
-        }
-        // console.log(chunks.length)
-        return Promise.all(chunks.slice(0, $this.cutNum).map(function (chunk) {
-          return next(chunk);
-        })).then(function (values) {
-          // console.log('values', values)
-          notifyUploadEnd(chunks[0].fileName)
+          if (nextIndex !== null) {
+            return next(chunks[nextIndex])
+          }
         })
+      }
+
+      // 获取当前还为上传的块
+      var initialChunks = [ ]
+      chunks.forEach(function (chunks) {
+        if (task.fullChunkState[chunk.chunkIndex] === stateMap.INITIAL) {
+          initialChunks.push(chunk)
+        }
+      })
+
+      var initialUploadQueue = initialChunks.slice(0, task.options.maxConcurrencyNumber).map(function (chunk) {
+        return next(chunk)
+      })
+
+      return Promise.all(initialUploadQueue).then(function () {
+        const notAllUpload = Object.keys(task.fullChunkState).some(key => {
+          if (task.fullChunkState[key] !== stateMap.SUCCESS) {
+            return true
+          }
+        })
+        if (!notAllUpload) {
+          return task.options.notifyApi(chunks[0].fileName)
+        } else {
+          return Promise.reject()
+        }
+      })
+    },
+    pause () {
+      Object.keys(this.fullChunkState).forEach(key => {
+        this.fullChunkState[key] === stateMap.INITIAL ? this.fullChunkState[key] = stateMap.PAUSE : ''
+      })
+    },
+    resume () {
+      Object.keys(this.fullChunkState).forEach(key => {
+        this.fullChunkState[key] === stateMap.PAUSE ? this.fullChunkState[key] = stateMap.INITIAL : ''
       })
     }
   }
 
   window.onload = function () {
+    var fileInput = document.querySelector('#file')
+    var pauseBtn = document.querySelector('#pause')
 
-    const fileInput = document.querySelector('#file');
+    // fileInput.addEventListener('change', function (evt) {
+    //   var file = evt.target.files[0]
 
+    //   var task = new Task(file, { uploadApi: uploadFile, notifyApi: notifyUploadEnd })
+
+    //   evt.target.value = null
+
+    //   task.sliceFile().then(function (chunks) {
+    //     var chunkLength = chunks.length
+    //     chunks.forEach(function (chunk) {
+    //       chunk.chunkLength = chunkLength
+    //     })
+
+    //     console.log(chunks)
+
+    //     return task.uploadChunks(chunks)
+    //   })
+    // })
+    let file = ''
+    let task = ''
     fileInput.addEventListener('change', function (evt) {
-      const file = evt.target.files[0];
-      // task.cutfile(file, 100 * 1024).then(function (chunks) {
-      //   const chunkLength = chunks.length
-      //   chunks.forEach(function (chunk) {
-      //     chunk.chunkLength = chunkLength
-      //   })
+      file = evt.target.files[0]
+      task = new Task(file, { uploadApi: uploadFile, notifyApi: notifyUploadEnd })
+      evt.target.value = null
+    })
 
-      //   console.log(chunks)
-
-      //   return task.uploadChunks(chunks, 4)
-      // })
-      const task = new Task(file, 100 * 1024, 4);
-      task.uploadChunks();
+    pauseBtn.addEventListener('click', function (evt) {
+      if (!file) {
+        alert('请选择文件')
+        return
+      }
+      let btnValue = pauseBtn.value
+      if (btnValue === 'up') {
+        pauseBtn.value = 'pause'
+        pauseBtn.innerHTML = '暂停'
+        task.resume()
+        task.sliceFile().then(function (chunks) {
+          var chunkLength = chunks.length
+          chunks.forEach(function (chunk) {
+            chunk.chunkLength = chunkLength
+          })
+          console.log(chunks)
+          return task.uploadChunks(chunks).then(() => {
+            pauseBtn.value = 'success'
+            pauseBtn.innerHTML = '上传完成'
+          })
+        })
+      } else if (btnValue === 'pause') {
+        pauseBtn.value = 'up'
+        pauseBtn.innerHTML = '继续上传'
+        task.pauseTask()
+      }
     })
   }
 })()
