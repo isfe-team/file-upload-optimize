@@ -10,7 +10,7 @@ Optimize file upload, use slice and support to resume from break. WIP -，-
 
 服务端如果一次接收太大文件，也可能会 maxFileSize exceeded。
 
-不过这时候服务端让它接收好之后，分块去储存就好。
+不过这时候服务端让它接收好之后，分块去储存/处理就好。
 
 ## think
 

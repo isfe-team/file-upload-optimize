@@ -12,23 +12,37 @@
 ;
 
 (function () {
+  var chunkStateMap = { INITIAL: 0, UPLOADING: 1, SUCCESS: 2, ERROR: 3 }
+  var taskStateMap = { ERROR: -1, INITIAL: 0, SLICING: 1, SLICED: 2, UPLOADING: 3, UPLOADED: 4, NOTIFIED: 5 }
+
+  var CancelToken = axios.CancelToken
+
+  var axiosInstance = axios.create({
+    baseURL: 'http://localhost:10240'
+  })
+
+  function cancelableXhrFactory (method, url, data) {
+    var cancel
+    var req = axiosInstance[method](url, data, {
+      cancelToken: new CancelToken(function (c) {
+        cancel = c
+      })
+    })
+
+    req.__cancel = cancel
+
+    return req
+  }
+
   // 上传文件 api
   function uploadFile (data) {
-    return fetch('http://localhost:10240/upload', {
-      method: 'POST',
-      body: data
-    })
+    return cancelableXhrFactory('post', 'upload', data)
   }
 
   // 通知服务端现在上传完毕了，可以合并了
   function notifyUploadEnd (fileName) {
-    return fetch('http://localhost:10240/concat-caches?fileName=' + fileName, {
-      method: 'GET'
-    })
+    return cancelableXhrFactory('get', 'concat-caches?fileName=' + fileName)
   }
-
-  var /*chunkStateMap = */stateMap = { INITIAL: 0, UPLOADING: 1, SUCCESS: 2, ERROR: 3 }
-  var taskStateMap = { ERROR: -1, INITIAL: 0, SLICING: 1, SLICED: 2, UPLOADING: 3, UPLOADED: 4, NOTIFIED: 5 }
 
   function Task (file, options) {
     if (!(this instanceof Task)) {
@@ -55,7 +69,7 @@
     this.fullChunkState = Object.keys(
       (new Array(chunkLength)).join(',').split(',')
     ).reduce((acc, x) => {
-        acc[x] = stateMap.INITIAL
+        acc[x] = chunkStateMap.INITIAL
         return acc
     }, { })
   }
@@ -189,35 +203,46 @@
       }
 
       var next = function (chunk) {
-        task.fullChunkState[chunk.chunkIndex] = stateMap.UPLOADING
-        return task._uploadChunk(chunk).then(function (res) {
-          task.fullChunkState[chunk.chunkIndex] = stateMap.SUCCESS
+        task.fullChunkState[chunk.chunkIndex] = chunkStateMap.UPLOADING
+        const req = task._uploadChunk(chunk)
+        req.__chunk = chunk
 
-          var nextIndex = randomGetNonUploadChunkIndex()
+        return req
+      }
 
-          console.log(chunk.chunkIndex, nextIndex)
+      var handleChunkUploadSuccess = function (chunk, res) {
+        task.fullChunkState[chunk.chunkIndex] = chunkStateMap.SUCCESS
 
-          if (nextIndex !== null) {
-            return next(chunks[nextIndex])
-          }
-        })
+        var nextIndex = randomGetNonUploadChunkIndex()
+
+        console.log(chunk.chunkIndex, nextIndex)
+
+        if (nextIndex !== null) {
+          return next(chunks[nextIndex])
+        }
       }
 
       // 获取当前还为上传的块
       var initialChunks = [ ]
       chunks.forEach(function (chunk) {
-        if (task.fullChunkState[chunk.chunkIndex] === stateMap.INITIAL) {
+        if (task.fullChunkState[chunk.chunkIndex] === chunkStateMap.INITIAL) {
           initialChunks.push(chunk)
         }
       })
 
-      var initialUploadQueue = initialChunks.slice(0, task.options.maxConcurrencyNumber).map(function (chunk) {
-        return next(chunk)
-      })
+      var initialUploadQueue = window.x = initialChunks
+        .slice(0, task.options.maxConcurrencyNumber)
+        .map(function (chunk) {
+          return next(chunk)
+        })
 
-      return Promise.all(initialUploadQueue).then(function () {
+      var withSuccessHandlerUploadQueue = initialUploadQueue.map((req) => req.then(function (res) {
+        return handleChunkUploadSuccess(req.__chunk, res)
+      }))
+
+      return Promise.all(withSuccessHandlerUploadQueue).then(function () {
         const notAllUpload = Object.keys(task.fullChunkState).some(key => {
-          if (task.fullChunkState[key] !== stateMap.SUCCESS) {
+          if (task.fullChunkState[key] !== chunkStateMap.SUCCESS) {
             return true
           }
         })
@@ -258,13 +283,16 @@
         return
       }
       var btnValue = pauseBtn.value
-      if (btnValue === 'up') {
+      if (btnValue === 'upload') {
         pauseBtn.value = 'pause'
-        pauseBtn.innerHTML = '暂停'
-        task.upload()
+        pauseBtn.innerText = '暂停'
+        task.upload().then(function () {
+          pauseBtn.value = 'upload'
+          pauseBtn.innerText = '上传'
+        })
       } else if (btnValue === 'pause') {
-        pauseBtn.value = 'up'
-        pauseBtn.innerHTML = '继续上传'
+        pauseBtn.value = 'upload'
+        pauseBtn.innerText = '继续上传'
         task.pause()
       }
     })
