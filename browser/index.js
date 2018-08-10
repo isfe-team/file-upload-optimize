@@ -51,7 +51,8 @@
         uploadApi: uploadFile,
         notifyApi: notifyUploadEnd,
         isCancel: axios.isCancel,
-        cancelWhenPause: false,
+        cancelWhenPause: true,
+        needMd5sum: true,
         cancelApi: function (promise) {
           promise.__cancel()
         },
