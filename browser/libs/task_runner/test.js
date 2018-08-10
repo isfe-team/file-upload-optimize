@@ -7,6 +7,11 @@
 ;
 
 (function () {
+  var CancelMessage = function (message) {
+    this.message = message
+  }
+  CancelMessage.prototype.__CANCEL__ = true
+
   var delay = function (ms) {
     let timer = null
     let cancel = null
@@ -20,7 +25,9 @@
     })
 
     promise.__timer = timer
-    promise.__cancel = cancel
+    promise.__cancel = function (message) {
+      cancel(new CancelMessage(message))
+    }
 
     return promise
   }
@@ -28,11 +35,10 @@
   var cancelDelay = function (delayPromise) {
     clearTimeout(delayPromise.__timer)
     delayPromise.__cancel('haha, cancel')
-    delayPromise.__CANCELED__ = true
   }
 
-  var isCancel = function (promise) {
-    return !!(promise && promise.__CANCELED__)
+  var isCancel = function (err) {
+    return !!(err && err.__CANCEL__)
   }
 
   var delayTaskGenerator = function (ms) {
@@ -55,7 +61,7 @@
     taskConfigs: delayTaskConfigs,
     taskGenerator: delayTaskGenerator,
     cancelTask: cancelDelay,
-    cancelWhenPause: false, // true,
+    cancelWhenPause: true, // false
     isCancel: isCancel,
     maxConcurrencyNumber: 4,
     onTaskSuccess: function () { echo('task success' + JSON.stringify(arguments)) },

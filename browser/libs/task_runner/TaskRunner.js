@@ -41,24 +41,20 @@
     }
 
     // options check
-    if (!options || !Array.isArray(options.taskConfigs) || !options.taskGenerator) {
+    if (!options || !options.taskGenerator) {
       throw new Error('options error')
     }
 
     // cache raw
     this._options = options
 
-    // the configs of tasks, used in `taskGenerator` and generate a Promise-based task
-    this.taskConfigs = options.taskConfigs.map(function (config) {
-      return {
-        uid: getUid(),
-        state: taskStateMap.INITIAL,
-        core: config
-      }
-    })
+    // if exist, use it
+    // otherwise, use empty array at first
+    var taskConfigs = Array.isArray(options.taskConfigs)
+                    ? options.taskConfigs
+                    : [ ]
 
-    // used for backup and save many things
-    this.taskConfigsBak = this.taskConfigs.slice(0)
+    this.setTaskConfigs(taskConfigs)
 
     // a function that accept a config, and return a Promise-based task
     this.taskGenerator = options.taskGenerator
@@ -88,6 +84,23 @@
 
   TaskRunner.prototype = {
     constructor: TaskRunner,
+
+    // @public
+    // set taskConfigs, because sometimes we don't know when we can get exact configs
+    // but other params should be set at first
+    setTaskConfigs: function (taskConfigs) {
+      // the configs of tasks, used in `taskGenerator` and generate a Promise-based task
+      this.taskConfigs = taskConfigs.map(function (config) {
+        return {
+          uid: getUid(),
+          state: taskStateMap.INITIAL,
+          core: config
+        }
+      })
+
+      // used for backup and save many things
+      this.taskConfigsBak = this.taskConfigs.slice(0)
+    },
 
     // @private
     // get an undo task config to generate next task
@@ -156,10 +169,14 @@
         task.config.res = err
 
         me._removeTask(task)
-        // when cancel, if cancelable && isCancel(t$), don't remove
-        if (!me.cancelable || !me.isCancel(task.t$)) {
-          me._removeTaskConfig(task.config)
-        }
+        // when cancel, if `cancelable && isCancel(err)`, don't remove
+        // otherwise, maybe remove config is better.
+        // now, I don't remove it, and set the ERROR state,
+        // so if `_addTask`, this task can be re-excuted.
+        // hmmm, retryCount is necessary.
+        // if (!(me.cancelable && me.isCancel(err))) {
+          // me._removeTaskConfig(task.config)
+        // }
 
         throw err
       })

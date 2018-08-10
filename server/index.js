@@ -41,6 +41,9 @@ const server = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url)
 
   const handleException = (err) => {
+    if (res.finished) {
+      return
+    }
     res.writeHead(500, { 'Content-Type': 'text/plain' })
     res.end('error when save')
   }
@@ -119,3 +122,7 @@ const server = http.createServer((req, res) => {
     </form>
   `)
 }).listen(PORT, () => console.log(`server start and listen port: ${PORT}.`))
+
+server.on('error', (err) => {
+  console.error('error:', err)
+})
